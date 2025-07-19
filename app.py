@@ -1,106 +1,98 @@
 import streamlit as st
-import gdown
 import tensorflow as tf
-import io
 from PIL import Image
 import numpy as np
-import pandas as pd
-import plotly.express as px
+import json
+import os
 
+# --- Funções Auxiliares ---
 
-# armazenar em cache pra não precisar baixar sempre que der refresh
 @st.cache_resource
+def carregar_modelo_e_classes():
+    """
+    Carrega o modelo Keras treinado e os nomes das classes.
+    Usa o cache do Streamlit para evitar recarregar a cada interação.
+    """
+    model_path = 'saved_model/meu_modelo_gestos.keras'
+    class_names_path = 'saved_model/class_names.json'
 
-def carrega_modelo():
-    # https://drive.google.com/file/d/1YAMjfUQ608juD1Ojc0qb08XMrToU5BWR/view?usp=sharing
-    url = "https://drive.google.com/file/d/1-QRtWkdYJdUmU6xZyZ2PkwXSb7Q6PGZ0/view?usp=sharing"
-    gdown.download(url, 'modelo_quantizado16bits.tflite') # baixa o arquivo (modelo)
+    if not os.path.exists(model_path) or not os.path.exists(class_names_path):
+        st.error("Erro: Arquivo do modelo ou das classes não encontrado!")
+        st.info("Por favor, execute o script 'train_model.py' primeiro para treinar e salvar o modelo.")
+        return None, None
 
-    # carrega o modelo
-    interpreter = tf.lite.Interpreter(model_path='modelo_quantizado16bits.tflite')
+    try:
+        modelo = tf.keras.models.load_model(model_path)
+        with open(class_names_path, 'r') as f:
+            nomes_classes = json.load(f)
+        return modelo, nomes_classes
+    except Exception as e:
+        st.error(f"Ocorreu um erro ao carregar o modelo: {e}")
+        return None, None
 
-    # disponibiliza para uso
-    interpreter.allocate_tensors()
+def preprocessar_imagem(image, target_size=(50, 50)):
+    """
+    Preprocessa a imagem carregada para o formato esperado pelo modelo.
+    """
+    # Garante que a imagem tenha 3 canais (RGB)
+    if image.mode != "RGB":
+        image = image.convert("RGB")
+    
+    # Redimensiona a imagem
+    image = image.resize(target_size)
+    
+    # Converte para array numpy e adiciona uma dimensão de batch
+    img_array = np.array(image)
+    img_array = np.expand_dims(img_array, axis=0) # Cria um batch de 1 imagem
+    
+    return img_array
 
-    return interpreter
+# --- Interface da Aplicação ---
 
-def carrega_imagem():
-    uploaded_file = st.file_uploader("Arraste e solte a imagem ou clique para selecionar uma", type=['png', 'jpg', 'jpeg'])
+st.set_page_config(page_title="Reconhecimento de Gestos", page_icon="👋")
+
+st.title("👋 Reconhecimento de Gestos com as Mãos")
+st.write(
+    "Faça o upload de uma imagem de um gesto com a mão e a inteligência artificial "
+    "tentará adivinhar qual é. O modelo foi treinado para reconhecer 37 gestos diferentes."
+)
+
+# Carrega o modelo e as classes
+modelo, nomes_classes = carregar_modelo_e_classes()
+
+# Se o modelo foi carregado com sucesso, exibe o uploader de arquivo
+if modelo is not None and nomes_classes is not None:
+    uploaded_file = st.file_uploader(
+        "Escolha uma imagem...",
+        type=["jpg", "jpeg", "png"]
+    )
 
     if uploaded_file is not None:
-        # ler a imagem
-        image_data = uploaded_file.read()
-
-        # abrir a imagem
-        image = Image.open(io.BytesIO(image_data))
-
-        # exibir a imagem na página
-        st.image(image)
-        st.success("Imagem foi carregada com sucesso")
-
-        # converter a imagem em ponto flutuante
-        image = np.array(image, dtype=np.float32)
-
-        # normalizar a imagem
-        image = image/255.0
-
-        # adicionar uma dimensão extra
-        image = np.expand_dims(image, axis=0)
+        # Exibe a imagem carregada
+        image = Image.open(uploaded_file)
         
-        return image
-    
-def previsao(interpreter, image):
-    # Obtém os detalhes da entrada do modelo (por exemplo: shape, índice do tensor)
-    input_details = interpreter.get_input_details()
-    
-    # Obtém os detalhes da saída do modelo
-    output_details = interpreter.get_output_details()
-    
-    # Define a imagem (pré-processada) como entrada no modelo
-    interpreter.set_tensor(input_details[0]['index'], image)
-    
-    # Executa a inferência (processo de predição) com o modelo TFLite
-    interpreter.invoke()
-    
-    # Obtém a saída do modelo — geralmente, as probabilidades para cada classe
-    output_data = interpreter.get_tensor(output_details[0]['index'])
+        col1, col2 = st.columns(2)
+        with col1:
+            st.image(image, caption="Imagem Carregada", use_column_width=True)
 
-    # Lista com os nomes das classes, correspondentes à ordem da saída do modelo
-    classes = ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z', '_']
-    
-    # Cria um DataFrame para exibir as classes e suas probabilidades
-    df = pd.DataFrame()
-    df['classes'] = classes
-    df['probabilidades (%)'] = 100 * output_data[0]  # Converte para porcentagem
-    
-    # Cria um gráfico de barras horizontal com Plotly para exibir as probabilidades
-    fig = px.bar(
-        df,
-        y='classes',
-        x='probabilidades (%)',
-        orientation='h',
-        text='probabilidades (%)',
-        title='Probabilidade de Gestos'
-    )
-    
-    # Exibe o gráfico interativo na interface do Streamlit
-    st.plotly_chart(fig)
+        # Preprocessa a imagem e faz a predição
+        with st.spinner('Analisando a imagem...'):
+            img_array = preprocessar_imagem(image)
+            predicao = modelo.predict(img_array)
+            
+            # Obtém a classe prevista e a confiança
+            score = tf.nn.softmax(predicao[0])
+            classe_prevista = nomes_classes[np.argmax(score)]
+            confianca = 100 * np.max(score)
 
-def main():
-    st.set_page_config(
-        page_title="Classifica gestos"
-    )
-    st.write("# Classifica gestos")
-    # carregar o modelo
-    interpreter = carrega_modelo()
+        with col2:
+            st.subheader("Resultado da Análise")
+            st.metric(label="Gesto Previsto", value=f"{classe_prevista}")
+            st.metric(label="Nível de Confiança", value=f"{confianca:.2f}%")
 
-
-    # carregar a imagem
-    image = carrega_imagem()
-
-    # classificar a imagem
-    if image is not None:
-        previsao(interpreter, image)
-
-if __name__ == "__main__":
-    main()
+            if confianca < 60:
+                st.warning("A confiança da predição é baixa. O modelo pode estar incerto.")
+            else:
+                st.success("Predição realizada com sucesso!")
+else:
+    st.warning("A aplicação não pode iniciar até que o modelo seja treinado e salvo.")
