@@ -1,17 +1,48 @@
-
 import tensorflow as tf
 import pathlib
 import json
 import os
 import numpy as np
 import matplotlib.pyplot as plt
+import zipfile
 
-# --- 1. Configuração de Parâmetros e Caminhos ---
+# --- 1. Montagem do Google Drive e Descompactação dos Dados ---
 print("--- Iniciando o script de treinamento ---")
 
-# Caminho para a pasta de dados descompactada
-data_dir = pathlib.Path('gestos/Gesture Image Data')
+# Nota: As linhas a seguir são para uso em um ambiente Google Colab.
+# Elas montarão seu Google Drive para acessar o arquivo zip.
+try:
+    from google.colab import drive
+    drive.mount('/content/drive')
+    
+    # Caminho para o seu arquivo ZIP no Google Drive
+    # AJUSTE ESTE CAMINHO se o seu arquivo estiver em outro lugar.
+    zip_path = "/content/drive/MyDrive/Grad. Sistemas de Informação/5° Período/Tópicos Especiais em Desenvolvimento de Software/gestos.zip"
+    
+    # Diretório onde os arquivos serão extraídos
+    extraction_dir = "gestos_extraidos"
+    
+    print(f"\n--- Descompactando {zip_path} ---")
+    if not os.path.exists(zip_path):
+        print(f"ERRO: O arquivo zip não foi encontrado em: {zip_path}")
+        print("Por favor, verifique se o caminho para o arquivo no Google Drive está correto.")
+        exit()
 
+    with zipfile.ZipFile(zip_path, "r") as zip_ref:
+        zip_ref.extractall(extraction_dir)
+    print(f"Arquivos extraídos com sucesso para a pasta '{extraction_dir}'")
+    
+    # O caminho para os dados de imagem, dentro da pasta extraída
+    data_dir = pathlib.Path(extraction_dir) / 'Gesture Image Data'
+
+except ImportError:
+    # Bloco para ser executado se não estiver no Colab (execução local)
+    print("\nAVISO: Não estamos em um ambiente Google Colab.")
+    print("O script tentará usar a pasta 'gestos/Gesture Image Data' localmente.")
+    data_dir = pathlib.Path('gestos/Gesture Image Data')
+
+
+# --- 2. Configuração de Parâmetros e Caminhos ---
 # Parâmetros para o treinamento
 batch_size = 64
 altura = 50
@@ -22,14 +53,14 @@ seed = 568
 
 # Criar diretório para salvar o modelo, se não existir
 os.makedirs('saved_model', exist_ok=True)
-print(f"Diretório de dados: {data_dir}")
+print(f"Diretório de dados sendo usado: {data_dir}")
 if not data_dir.exists():
-    print("\nERRO: O diretório de dados 'gestos/Gesture Image Data' não foi encontrado.")
-    print("Por favor, certifique-se de que você descompactou o arquivo 'gestos.zip' na pasta correta.")
+    print(f"\nERRO: O diretório de dados '{data_dir}' não foi encontrado.")
+    print("Por favor, certifique-se de que o arquivo zip foi extraído corretamente e contém a pasta 'Gesture Image Data'.")
     exit()
 
 
-# --- 2. Carregamento e Preparação dos Dados ---
+# --- 3. Carregamento e Preparação dos Dados ---
 print("\n--- Carregando e preparando os datasets ---")
 
 # Carregando o conjunto de dados de treino
@@ -69,7 +100,7 @@ treino = treino.cache().shuffle(1000).prefetch(buffer_size=AUTOTUNE)
 validacao = validacao.cache().prefetch(buffer_size=AUTOTUNE)
 
 
-# --- 3. Definição do Modelo (Arquitetura da CNN) ---
+# --- 4. Definição do Modelo (Arquitetura da CNN) ---
 print("\n--- Construindo o modelo de CNN ---")
 
 # Camada de aumento de dados (Data Augmentation) para evitar overfitting
@@ -82,35 +113,18 @@ data_augmentation = tf.keras.Sequential([
 
 # Construção do modelo sequencial
 modelo = tf.keras.models.Sequential([
-    # Camada de entrada com o formato das imagens (50x50 pixels, 3 canais de cor)
     tf.keras.layers.Input(shape=(altura, largura, 3)),
-    
-    # Aplicando o aumento de dados
     data_augmentation,
-    
-    # Normalizando os valores dos pixels de [0, 255] para [0, 1]
     tf.keras.layers.Rescaling(1./255),
-    
-    # Primeira camada de convolução e max pooling
     tf.keras.layers.Conv2D(32, (3, 3), activation='relu'),
     tf.keras.layers.MaxPooling2D(2, 2),
-    
-    # Segunda camada de convolução e max pooling
     tf.keras.layers.Conv2D(64, (3, 3), activation='relu'),
     tf.keras.layers.MaxPooling2D(2, 2),
-
-    # Terceira camada de convolução e max pooling
     tf.keras.layers.Conv2D(128, (3, 3), activation='relu'),
     tf.keras.layers.MaxPooling2D(2, 2),
-    
-    # Achatando os mapas de características para uma dimensão
     tf.keras.layers.Flatten(),
-    
-    # Camada densa (totalmente conectada) com regularização Dropout
     tf.keras.layers.Dense(256, activation='relu'),
     tf.keras.layers.Dropout(0.5),
-    
-    # Camada de saída com neurônios para cada classe e ativação softmax
     tf.keras.layers.Dense(num_classes, activation='softmax')
 ])
 
@@ -121,41 +135,38 @@ modelo.compile(
     metrics=['accuracy']
 )
 
-# Exibindo um resumo da arquitetura do modelo
 modelo.summary()
 
 
-# --- 4. Treinamento do Modelo ---
+# --- 5. Treinamento do Modelo ---
 print("\n--- Iniciando o treinamento ---")
 
 # Callback para parar o treinamento se a acurácia de validação não melhorar
 early_stopping = tf.keras.callbacks.EarlyStopping(
     monitor='val_accuracy',
-    patience=10, # Número de épocas sem melhora antes de parar
-    restore_best_weights=True # Restaura os pesos da melhor época
+    patience=10,
+    restore_best_weights=True
 )
 
 history = modelo.fit(
     treino,
     validation_data=validacao,
     epochs=epocas,
-    callbacks=[early_stopping] # Adicionando o callback
+    callbacks=[early_stopping]
 )
 
 
-# --- 5. Avaliação e Salvamento do Modelo ---
+# --- 6. Avaliação e Salvamento do Modelo ---
 print("\n--- Treinamento concluído. Avaliando e salvando o modelo. ---")
 
-# Avaliando o modelo com os dados de validação
 loss, acc = modelo.evaluate(validacao)
 print(f"\nAcurácia final de validação: {acc:.4f}")
 
-# Salvando o modelo treinado no formato Keras
 modelo.save('saved_model/meu_modelo_gestos.keras')
 print("Modelo salvo com sucesso em 'saved_model/meu_modelo_gestos.keras'")
 
 
-# --- 6. Visualização dos Resultados (Opcional) ---
+# --- 7. Visualização dos Resultados (Opcional) ---
 def plota_resultados(history):
     acc = history.history['accuracy']
     val_acc = history.history['val_accuracy']
@@ -184,4 +195,3 @@ def plota_resultados(history):
 plota_resultados(history)
 print("\nGráficos de resultado salvos em 'training_results.png'")
 print("--- Script de treinamento finalizado ---")
-```python
